@@ -1,0 +1,8 @@
+{
+  "name": "FFN ACCOUNTING",
+  "description": "Sistem akuntansi double-entry mandiri Fresh Food Nusantara untuk buku besar, jurnal, AR/AP supplier \u0026 SPPG, neraca, dan laba rugi.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
