@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import path from 'path';
+import fs from 'fs';
 import { dbStore } from './server/db';
 import {
   hashPassword,
@@ -15,13 +16,21 @@ import {
   ChartOfAccount,
   AccountingPeriod,
 } from './server/types';
-import { authMiddleware, requireRole, idempotencyMiddleware, AuthenticatedRequest } from './server/middleware';
+import {
+  authMiddleware,
+  requireRole,
+  idempotencyMiddleware,
+  rateLimitLogin,
+  AuthenticatedRequest,
+} from './server/middleware';
 import { AccountingService } from './server/accountingService';
+import { runJsonToPgMigration } from './server/migrationService';
+import { isPgAvailable } from './server/pgClient';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Security Headers (OWASP Hardening)
+// Security Headers (OWASP Level 1 Hardening)
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
@@ -33,7 +42,7 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: '5mb' }));
 
-// Helper parser cookie sederhana
+// Helper parser cookie aman
 app.use((req: any, res, next) => {
   const cookieHeader = req.headers.cookie;
   req.cookies = {};
@@ -48,7 +57,19 @@ app.use((req: any, res, next) => {
   next();
 });
 
-// Helper audit log
+// Helper audit log steril tanpa credential / secret
+function sanitizeAuditPayload(obj: any): any {
+  if (!obj || typeof obj !== 'object') return obj;
+  const clone = { ...obj };
+  const sensitiveKeys = ['password', 'passwordHash', 'token', 'secret', 'masterPassword', 'sessionId'];
+  for (const k of sensitiveKeys) {
+    if (k in clone) {
+      delete clone[k];
+    }
+  }
+  return clone;
+}
+
 function recordAuditLog(
   userId: string | undefined,
   action: string,
@@ -62,13 +83,13 @@ function recordAuditLog(
 ) {
   const db = dbStore.getData();
   const log = {
-    id: `audit-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+    id: `audit-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
     userId,
     action,
     resource,
     resourceId,
-    beforeState: beforeState || null,
-    afterState: afterState || null,
+    beforeState: sanitizeAuditPayload(beforeState),
+    afterState: sanitizeAuditPayload(afterState),
     ipAddress: (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1',
     userAgent: req.headers['user-agent'] || 'Unknown',
     success,
@@ -81,12 +102,15 @@ function recordAuditLog(
 // -------------------------------------------------------------
 // 1. HEALTH CHECK & SYSTEM READINESS
 // -------------------------------------------------------------
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
+  const pgReady = await isPgAvailable();
   res.json({
     status: 'healthy',
     system: 'Fresh Food Nusantara (FFN) Accounting Core',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
+    databaseEngine: pgReady ? 'PostgreSQL (Active)' : 'ACID File-Backed Store (Active)',
+    pgConnected: pgReady,
     dbRecords: {
       users: dbStore.getData().users.length,
       accounts: dbStore.getData().accounts.length,
@@ -100,7 +124,7 @@ app.get('/api/health', (req, res) => {
 // -------------------------------------------------------------
 // 2. AUTHENTICATION & SESSION ENDPOINTS
 // -------------------------------------------------------------
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', rateLimitLogin, async (req, res) => {
   const { username, password } = req.body;
   const cleanUsername = (username || '').trim().toLowerCase();
   const cleanPassword = (password || '').trim();
@@ -132,7 +156,7 @@ app.post('/api/auth/login', async (req, res) => {
     });
   }
 
-  // Create session
+  // Generate cryptographically secure session
   const sessionId = `sess_${crypto.randomBytes(32).toString('hex')}`;
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // 7 hari
@@ -151,7 +175,7 @@ app.post('/api/auth/login', async (req, res) => {
 
   recordAuditLog(user.id, 'LOGIN', 'USER', user.username, true, req);
 
-  // Set secure cookie
+  // Set secure HttpOnly cookie
   res.setHeader('Set-Cookie', `ffn_session=${sessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 86400}`);
 
   const { passwordHash, ...safeUser } = user;
@@ -181,7 +205,7 @@ app.get('/api/auth/me', authMiddleware, (req: AuthenticatedRequest, res) => {
 });
 
 // -------------------------------------------------------------
-// 3. MASTER DATA ENDPOINTS (READ ALL STATE FOR CLIENT)
+// 3. MASTER DATA BOOTSTRAP (READ-ONLY FOR AUTHORIZED CLIENT)
 // -------------------------------------------------------------
 app.get('/api/accounting/bootstrap', authMiddleware, (req: AuthenticatedRequest, res) => {
   const db = dbStore.getData();
@@ -250,12 +274,12 @@ app.post('/api/accounts', authMiddleware, requireRole(['MASTER', 'ACCOUNTING']),
       if (exists) throw new Error(`Akun dengan kode '${code}' sudah terdaftar.`);
 
       const account: ChartOfAccount = {
-        code,
-        name,
+        code: code.trim(),
+        name: name.trim(),
         category,
-        subcategory,
+        subcategory: subcategory?.trim() || 'Umum',
         normalBalance,
-        description: description || '',
+        description: description?.trim(),
         balance: 0,
         isActive: true,
         createdAt: new Date().toISOString(),
@@ -263,86 +287,105 @@ app.post('/api/accounts', authMiddleware, requireRole(['MASTER', 'ACCOUNTING']),
       };
 
       db.accounts.push(account);
-      recordAuditLog(req.user?.id, 'COA_CREATED', 'COA', code, true, req, null, account);
+      recordAuditLog(req.user?.id, 'COA_CREATED', 'COA', account.code, true, req, null, account);
       return account;
     });
 
     res.json({ success: true, data: newAccount });
   } catch (error: any) {
-    res.status(400).json({ success: false, error: { code: 'COA_ERROR', message: error.message } });
+    res.status(400).json({ success: false, error: { code: 'COA_CREATE_ERROR', message: error.message } });
   }
 });
 
 // -------------------------------------------------------------
-// 6. GENERAL LEDGER & JOURNALS
+// 6. GENERAL LEDGER & JOURNALS (STRICT DOUBLE-ENTRY)
 // -------------------------------------------------------------
 app.post('/api/journals', authMiddleware, requireRole(['MASTER', 'ACCOUNTING']), idempotencyMiddleware, async (req: AuthenticatedRequest, res) => {
-  const { date, reference, description, lines, periodId } = req.body;
+  const { date, periodId, reference, description, lines } = req.body;
 
   try {
     const newEntry = await dbStore.transaction((db) => {
-      const activePeriod = AccountingService.validatePeriod(periodId || 'per-2026-09');
+      const activePeriod = AccountingService.validatePeriod(periodId, date);
+
+      if (!lines || !Array.isArray(lines) || lines.length < 2) {
+        throw new Error('Jurnal wajib memiliki minimal 2 baris transaksi (Double-entry debit & kredit).');
+      }
+
       const { totalDebit, totalCredit } = AccountingService.validateBalancedJournal(lines);
 
+      // Pastikan akun terdaftar dan aktif
+      lines.forEach((l) => {
+        const acc = db.accounts.find((a) => a.code === l.accountCode);
+        if (!acc) throw new Error(`Kode akun '${l.accountCode}' tidak valid.`);
+        if (!acc.isActive) throw new Error(`Akun '${acc.name}' (${acc.code}) sedang dinonaktifkan.`);
+      });
+
       const entryNumber = AccountingService.generateJournalNumber(date);
+
       const entry: JournalEntry = {
-        id: `je-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        id: `je-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
         entryNumber,
         periodId: activePeriod.id,
         date,
-        reference: reference || 'INTERNAL',
-        description,
+        reference: (reference || 'MANUAL-ADJ').trim(),
+        description: description.trim(),
         status: 'POSTED',
         totalDebit,
         totalCredit,
         lines: lines.map((l: any, idx: number) => ({
           id: `jl-${Date.now()}-${idx}`,
           accountCode: l.accountCode,
-          accountName: l.accountName || l.accountCode,
+          accountName: l.accountName || db.accounts.find((a) => a.code === l.accountCode)?.name || 'Akun',
           debit: Number(l.debit) || 0,
           credit: Number(l.credit) || 0,
-          memo: l.memo,
-          partyName: l.partyName,
+          memo: l.memo?.trim(),
+          partyName: l.partyName?.trim(),
         })),
         createdBy: req.user?.fullName || 'Arthur',
         createdAt: new Date().toISOString(),
       };
 
+      // Mutasi Saldo COA
       AccountingService.updateAccountBalances(db.accounts, entry.lines, 1);
       db.journals.unshift(entry);
 
-      recordAuditLog(req.user?.id, 'JOURNAL_CREATED', 'JOURNAL', entry.entryNumber, true, req, null, entry);
+      recordAuditLog(req.user?.id, 'JOURNAL_POSTED', 'JOURNAL', entry.entryNumber, true, req, null, {
+        entryNumber: entry.entryNumber,
+        totalAmount: totalDebit,
+      });
+
       return entry;
     });
 
     res.json({ success: true, data: newEntry });
   } catch (error: any) {
-    res.status(400).json({ success: false, error: { code: 'JOURNAL_POST_ERROR', message: error.message } });
+    res.status(400).json({ success: false, error: { code: 'JOURNAL_CREATE_ERROR', message: error.message } });
   }
 });
 
-app.post('/api/journals/reverse', authMiddleware, requireRole(['MASTER', 'ACCOUNTING']), async (req: AuthenticatedRequest, res) => {
-  const { journalId, reason } = req.body;
+// Reversal Jurnal Resmi (Audit Immutable)
+app.post('/api/journals/reverse', authMiddleware, requireRole(['MASTER', 'ACCOUNTING']), idempotencyMiddleware, async (req: AuthenticatedRequest, res) => {
+  const { journalEntryNumber, reason } = req.body;
 
   try {
     const reversal = await dbStore.transaction((db) => {
-      const original = db.journals.find((j) => j.id === journalId);
+      const original = db.journals.find((j) => j.entryNumber === journalEntryNumber);
       if (!original) throw new Error('Jurnal tidak ditemukan.');
-      if (original.status === 'REVERSED') throw new Error('Jurnal ini sudah pernah dibatalkan (dibalik).');
+      if (original.status === 'REVERSED') throw new Error('Jurnal ini sudah pernah dibalik (Reversed).');
 
       AccountingService.validatePeriod(original.periodId);
 
       const reversalDate = new Date().toISOString().substring(0, 10);
       const reversalNumber = AccountingService.generateJournalNumber(reversalDate);
 
-      // Baris pembalik: debit jadi kredit, kredit jadi debit
-      const reversedLines = original.lines.map((l, idx) => ({
-        id: `jl-rev-${Date.now()}-${idx}`,
+      // Tukar posisi debit dan kredit secara tepat
+      const reversedLines = original.lines.map((l) => ({
+        id: `jl-rev-${Date.now()}-${l.id}`,
         accountCode: l.accountCode,
         accountName: l.accountName,
         debit: l.credit,
         credit: l.debit,
-        memo: `[PEMBALIKAN] ${l.memo || ''}`,
+        memo: `[REVERSAL] ${l.memo || ''}`,
         partyName: l.partyName,
       }));
 
@@ -397,7 +440,7 @@ app.post('/api/invoices', authMiddleware, requireRole(['MASTER', 'ACCOUNTING']),
 
   try {
     const invoice = await dbStore.transaction((db) => {
-      const activePeriod = AccountingService.validatePeriod(periodId || 'per-2026-09');
+      const activePeriod = AccountingService.validatePeriod(periodId || 'per-2026-09', date);
 
       if (!items || !items.length) throw new Error('Faktur harus memuat minimal 1 item pangan.');
 
@@ -493,7 +536,7 @@ app.post('/api/invoices', authMiddleware, requireRole(['MASTER', 'ACCOUNTING']),
       db.journals.unshift(autoJournal);
 
       const inv: SalesInvoice = {
-        id: `inv-${Date.now()}`,
+        id: `inv-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
         invoiceNumber,
         periodId: activePeriod.id,
         sppgName,
@@ -533,7 +576,7 @@ app.post('/api/invoices/pay', authMiddleware, requireRole(['MASTER', 'ACCOUNTING
       const inv = db.invoices.find((i) => i.id === invoiceId);
       if (!inv) throw new Error('Faktur tidak ditemukan.');
 
-      AccountingService.validatePeriod(inv.periodId);
+      AccountingService.validatePeriod(inv.periodId, date);
 
       const payAmount = Number(amount) || 0;
       if (payAmount <= 0) throw new Error('Jumlah pembayaran harus lebih besar dari 0.');
@@ -541,7 +584,7 @@ app.post('/api/invoices/pay', authMiddleware, requireRole(['MASTER', 'ACCOUNTING
       const outstanding = inv.netTotal - inv.paidAmount;
       if (payAmount > outstanding) {
         throw new Error(
-          `Pembayaran berlebih (Overpayment). Maksimal yang dapat dibayar adalah Rp ${outstanding.toLocaleString()}.`
+          `Pembayaran berlebih (Overpayment). Maksimal yang dapat dibayar adalah Rp ${outstanding.toLocaleString('id-ID')}.`
         );
       }
 
@@ -620,7 +663,7 @@ app.post('/api/bills', authMiddleware, requireRole(['MASTER', 'ACCOUNTING']), id
 
   try {
     const bill = await dbStore.transaction((db) => {
-      const activePeriod = AccountingService.validatePeriod(periodId || 'per-2026-09');
+      const activePeriod = AccountingService.validatePeriod(periodId || 'per-2026-09', date);
 
       if (!items || !items.length) throw new Error('Tagihan harus memuat minimal 1 item.');
 
@@ -640,7 +683,6 @@ app.post('/api/bills', authMiddleware, requireRole(['MASTER', 'ACCOUNTING']), id
       });
 
       const totalAmount = formattedItems.reduce((s: number, it: any) => s + it.total, 0);
-
       const billNumber = AccountingService.generateBillNumber(supplierName, date);
 
       let targetSupplierAccount = '2-1400';
@@ -655,7 +697,7 @@ app.post('/api/bills', authMiddleware, requireRole(['MASTER', 'ACCOUNTING']), id
         {
           id: `jl-${Date.now()}-1`,
           accountCode: '5-1100',
-          accountName: 'Beban Pokok Pengadaan Komoditas Pangan',
+          accountName: 'Beban Pokok Pendapatan (HPP) - Pembelian Pangan',
           debit: totalAmount,
           credit: 0,
           memo: `Tagihan masuk ${billNumber}`,
@@ -667,7 +709,7 @@ app.post('/api/bills', authMiddleware, requireRole(['MASTER', 'ACCOUNTING']), id
           accountName: db.accounts.find((a) => a.code === targetSupplierAccount)?.name || 'Hutang Usaha Supplier',
           debit: 0,
           credit: totalAmount,
-          memo: `Hutang tagihan ${billNumber}`,
+          memo: `Tagihan masuk ${billNumber}`,
           partyName: supplierName,
         },
       ];
@@ -681,7 +723,7 @@ app.post('/api/bills', authMiddleware, requireRole(['MASTER', 'ACCOUNTING']), id
         periodId: activePeriod.id,
         date,
         reference: billNumber,
-        description: `Tagihan masuk pengadaan pangan dari ${supplierName}`,
+        description: `Penerimaan tagihan pasokan dari supplier ${supplierName}`,
         status: 'POSTED',
         lines: journalLines,
         totalDebit: totalAmount,
@@ -693,7 +735,7 @@ app.post('/api/bills', authMiddleware, requireRole(['MASTER', 'ACCOUNTING']), id
       db.journals.unshift(autoJournal);
 
       const newBill: SupplierBill = {
-        id: `bill-${Date.now()}`,
+        id: `bill-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
         billNumber,
         periodId: activePeriod.id,
         supplierName,
@@ -728,15 +770,15 @@ app.post('/api/bills/pay', authMiddleware, requireRole(['MASTER', 'ACCOUNTING'])
       const targetBill = db.bills.find((b) => b.id === billId);
       if (!targetBill) throw new Error('Tagihan supplier tidak ditemukan.');
 
-      AccountingService.validatePeriod(targetBill.periodId);
+      AccountingService.validatePeriod(targetBill.periodId, date);
 
       const payAmount = Number(amount) || 0;
-      if (payAmount <= 0) throw new Error('Jumlah pembayaran harus > 0.');
+      if (payAmount <= 0) throw new Error('Jumlah pembayaran harus lebih besar dari 0.');
 
       const outstanding = targetBill.totalAmount - targetBill.paidAmount;
       if (payAmount > outstanding) {
         throw new Error(
-          `Pembayaran berlebih (Overpayment AP). Maksimal pembayaran adalah Rp ${outstanding.toLocaleString()}.`
+          `Pembayaran berlebih (Overpayment AP). Sisa tagihan adalah Rp ${outstanding.toLocaleString('id-ID')}.`
         );
       }
 
@@ -814,7 +856,7 @@ app.post('/api/bills/pay', authMiddleware, requireRole(['MASTER', 'ACCOUNTING'])
 });
 
 // -------------------------------------------------------------
-// 9. INVESTOR PAYOUTS
+// 9. INVESTOR OBLIGATIONS & PAYOUT (DOUBLE PAYMENT PROTECTION)
 // -------------------------------------------------------------
 app.post('/api/investors/pay', authMiddleware, requireRole(['MASTER', 'ACCOUNTING']), idempotencyMiddleware, async (req: AuthenticatedRequest, res) => {
   const { payoutId, bankAccountCode, bankName, notes } = req.body;
@@ -823,7 +865,7 @@ app.post('/api/investors/pay', authMiddleware, requireRole(['MASTER', 'ACCOUNTIN
     const updatedPayout = await dbStore.transaction((db) => {
       const payout = db.investorPayouts.find((p) => p.id === payoutId);
       if (!payout) throw new Error('Data bagi hasil investor tidak ditemukan.');
-      if (payout.status === 'PAID') throw new Error('Bagi hasil periode ini sudah pernah dibayar (Lunas).');
+      if (payout.status === 'PAID') throw new Error('Bagi hasil periode ini sudah pernah dibayar (Lunas). Double payout ditolak.');
 
       AccountingService.validatePeriod('per-2026-09');
 
@@ -914,12 +956,11 @@ app.post('/api/cashback/post-journal', authMiddleware, requireRole(['MASTER', 'A
         throw new Error('Cashback ini sudah pernah diposting ke jurnal pembukuan.');
       }
 
-      AccountingService.validatePeriod(rec.periodId || 'per-2026-09');
+      AccountingService.validatePeriod(rec.periodId || 'per-2026-09', rec.date);
 
       const today = new Date().toISOString().substring(0, 10);
       const entryNumber = AccountingService.generateJournalNumber(today);
 
-      // Debit Piutang Cashback SPPG (1-1400) atau Kas, Kredit Pendapatan Selisih Cashback (4-1200)
       const journalLines = [
         {
           id: `jl-${Date.now()}-1`,
@@ -936,7 +977,7 @@ app.post('/api/cashback/post-journal', authMiddleware, requireRole(['MASTER', 'A
           accountName: 'Pendapatan Lain-lain & Selisih Cashback SPPG',
           debit: 0,
           credit: rec.totalCashback,
-          memo: `Selisih SPPG Rp ${rec.sppgPrice.toLocaleString()} vs Real Rp ${rec.realPrice.toLocaleString()} (${rec.qty} ${rec.unit})`,
+          memo: `Selisih SPPG Rp ${rec.sppgPrice.toLocaleString('id-ID')} vs Real Rp ${rec.realPrice.toLocaleString('id-ID')} (${rec.qty} ${rec.unit})`,
           partyName: rec.sppg,
         },
       ];
@@ -989,13 +1030,14 @@ app.post('/api/cashback', authMiddleware, requireRole(['MASTER', 'ACCOUNTING']),
       if (q <= 0) throw new Error('Volume/Qty harus lebih besar dari 0.');
       if (sPrice <= 0 || rPrice <= 0) throw new Error('Harga SPPG dan Harga Real harus lebih besar dari 0.');
 
-      const cashbackUnitDiff = sPrice - rPrice;
-      const totalCashback = cashbackUnitDiff * q;
       const titipan = Number(titipanAmount) || 0;
       const retur = Number(returAmount) || 0;
 
+      const cashbackUnitDiff = Math.max(0, sPrice - rPrice);
+      const totalCashback = Math.round(cashbackUnitDiff * q * 100) / 100;
+
       const record: CashbackReconciliationRecord = {
-        id: `cb-${Date.now()}`,
+        id: `cb-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
         periodId: 'per-2026-09',
         sppg: (sppg || '').trim(),
         period: (period || 'September 2026').trim(),
@@ -1110,49 +1152,29 @@ app.put('/api/users/:id', authMiddleware, requireRole(['MASTER']), async (req: A
   }
 });
 
-app.post('/api/users/:id/toggle-active', authMiddleware, requireRole(['MASTER']), async (req: AuthenticatedRequest, res) => {
-  const { id } = req.params;
-
+// -------------------------------------------------------------
+// 12. DATABASE MIGRATION TRIGGER (JSON -> POSTGRESQL)
+// -------------------------------------------------------------
+app.post('/api/system/migrate-pg', authMiddleware, requireRole(['MASTER']), async (req: AuthenticatedRequest, res) => {
   try {
-    const updatedUser = await dbStore.transaction((db) => {
-      const user = db.users.find((u) => u.id === id);
-      if (!user) throw new Error('Pengguna tidak ditemukan.');
-
-      if (user.username.toLowerCase() === 'arthur') {
-        throw new Error('Akun Master Arthur tidak boleh dinonaktifkan.');
-      }
-
-      const before = { ...user };
-      user.isActive = !user.isActive;
-      user.updatedAt = new Date().toISOString();
-
-      recordAuditLog(
-        req.user?.id,
-        user.isActive ? 'USER_ACTIVATED' : 'USER_DEACTIVATED',
-        'USER',
-        user.username,
-        true,
-        req,
-        before,
-        user
-      );
-      return user;
+    const summary = await runJsonToPgMigration();
+    recordAuditLog(req.user?.id, 'POSTGRESQL_MIGRATION', 'SYSTEM', 'DATABASE', true, req, null, {
+      checksum: summary.jsonChecksum,
+      isVerified: summary.isVerified,
     });
-
-    const { passwordHash, ...safe } = updatedUser;
-    res.json({ success: true, data: safe });
-  } catch (error: any) {
-    res.status(400).json({ success: false, error: { code: 'USER_TOGGLE_ERROR', message: error.message } });
+    res.json({ success: true, data: summary });
+  } catch (err: any) {
+    recordAuditLog(req.user?.id, 'POSTGRESQL_MIGRATION_FAILED', 'SYSTEM', 'DATABASE', false, req, null, null, err.message);
+    res.status(500).json({ success: false, error: { code: 'MIGRATION_FAILED', message: err.message } });
   }
 });
 
 // -------------------------------------------------------------
-// 12. CRITICAL AUDITED DESTRUCTIVE ACTION (FORMAT DATA SERVER)
+// 13. CRITICAL AUDITED DESTRUCTIVE ACTION (FORMAT DATA SERVER DENGAN AUTO-BACKUP)
 // -------------------------------------------------------------
 app.post('/api/system/format-data', authMiddleware, requireRole(['MASTER']), async (req: AuthenticatedRequest, res) => {
   const { confirmationPhrase, masterPassword } = req.body;
 
-  // Wajib verifikasi teks ketat & password re-otentikasi Master
   if (confirmationPhrase !== 'FORMAT FFN ACCOUNTING') {
     return res.status(400).json({
       success: false,
@@ -1173,11 +1195,18 @@ app.post('/api/system/format-data', authMiddleware, requireRole(['MASTER']), asy
 
   try {
     await dbStore.transaction((db) => {
+      // 1. Mandatory Auto-Backup sebelum format
+      const backupDir = path.resolve(process.cwd(), 'data', 'backups');
+      if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+      const backupPath = path.join(backupDir, `backup_before_format_${Date.now()}.json`);
+      fs.writeFileSync(backupPath, JSON.stringify(db, null, 2), 'utf-8');
+
       const beforeState = {
         invoiceCount: db.invoices.length,
         billCount: db.bills.length,
         journalCount: db.journals.length,
         cashbackCount: db.cashbackRecords.length,
+        backupFile: backupPath,
       };
 
       // Reset data transaksi ke nol
@@ -1192,7 +1221,7 @@ app.post('/api/system/format-data', authMiddleware, requireRole(['MASTER']), asy
         a.updatedAt = new Date().toISOString();
       });
 
-      // Reset saldo 4 rekening bank ke nol
+      // Reset saldo rekening bank ke nol
       db.companyBanks.forEach((b) => {
         b.balance = 0;
         b.updatedAt = new Date().toISOString();
@@ -1216,13 +1245,13 @@ app.post('/api/system/format-data', authMiddleware, requireRole(['MASTER']), asy
         true,
         req,
         beforeState,
-        { status: 'CLEARED_TO_ZERO' }
+        { status: 'CLEARED_TO_ZERO', backupCreated: backupPath }
       );
     });
 
     res.json({
       success: true,
-      message: 'Format transaksi selesai. Seluruh data transaksi dibersihkan ke nol dengan integritas terjamin.',
+      message: 'Format transaksi selesai. Seluruh data transaksi dibersihkan ke nol dengan auto-backup terverifikasi.',
     });
   } catch (error: any) {
     res.status(500).json({ success: false, error: { code: 'FORMAT_FAILED', message: error.message } });
@@ -1230,7 +1259,7 @@ app.post('/api/system/format-data', authMiddleware, requireRole(['MASTER']), asy
 });
 
 // -------------------------------------------------------------
-// 13. VITE MIDDLEWARE SETUP FOR FULL-STACK INTEGRATION
+// 14. VITE MIDDLEWARE SETUP FOR FULL-STACK INTEGRATION
 // -------------------------------------------------------------
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {

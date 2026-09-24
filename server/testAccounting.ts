@@ -2,7 +2,7 @@ import { AccountingService } from './accountingService';
 import { verifyPassword, hashPassword } from './types';
 import { dbStore } from './db';
 
-console.log('--- 1. Testing Password Hashing & Verification ---');
+console.log('--- 1. Testing Password Hashing & Verification (PBKDF2 SHA512) ---');
 const pass = 'superSecret2026!';
 const hashed = hashPassword(pass);
 console.assert(verifyPassword(pass, hashed) === true, 'Verification should succeed for correct password');
@@ -32,7 +32,7 @@ try {
   console.log('✓ Unbalanced journal correctly rejected:', e.message);
 }
 
-console.log('--- 3. Testing Dynamic Numbering ---');
+console.log('--- 3. Testing Sequence-Safe Numbering ---');
 const date = '2026-09-24';
 const invNum = AccountingService.generateInvoiceNumber(date);
 const billNum = AccountingService.generateBillNumber('Queen Food Nusantara', date);
@@ -43,13 +43,21 @@ console.assert(billNum.startsWith('BILL-QUEEN-2609-'), `Bill number should match
 console.assert(journalNum.startsWith('JU-202609-'), `Journal number should match prefix, got: ${journalNum}`);
 console.log(`✓ Numbering generated: ${invNum}, ${billNum}, ${journalNum}`);
 
-console.log('--- 4. Testing Period Validation ---');
+console.log('--- 4. Testing Period Date Range Validation ---');
 try {
-  const period = AccountingService.validatePeriod('per-2026-09');
-  console.log(`✓ Period '${period.name}' status: ${period.status}`);
+  const period = AccountingService.validatePeriod('per-2026-09', '2026-09-15');
+  console.log(`✓ Valid period transaction date approved: ${period.name}`);
 } catch (e: any) {
   console.error('Failed period test:', e.message);
   process.exit(1);
+}
+
+try {
+  AccountingService.validatePeriod('per-2026-09', '2026-11-01');
+  console.error('Out of bounds date should have thrown error');
+  process.exit(1);
+} catch (e: any) {
+  console.log('✓ Out of bounds period date correctly rejected:', e.message);
 }
 
 console.log('============================================');
