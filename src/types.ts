@@ -139,6 +139,8 @@ export interface CashbackReconciliationRecord {
   titipanAmount: number;    // STRICTLY SEPARATE
   returAmount: number;      // STRICTLY SEPARATE
   accountingStatus: 'TERCATAT_PIUTANG' | 'SUDAH_DIKREDIT' | 'SETOR_TUNAI';
+  journalEntryNumber?: string;
+  periodId?: string;
   notes?: string;
 }
 
@@ -169,6 +171,19 @@ export interface MonthlyInvestorPayout {
 }
 
 export type UserRole = 'MASTER' | 'ACCOUNTING' | 'OWNER';
+
+export type AccountingTab = 
+  | 'overview' 
+  | 'owner' 
+  | 'ledger' 
+  | 'receivable' 
+  | 'payable' 
+  | 'accounts' 
+  | 'reports' 
+  | 'cashback' 
+  | 'investors' 
+  | 'users' 
+  | 'dashboard';
 
 export interface AppUser {
   id: string;

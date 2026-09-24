@@ -20,7 +20,7 @@ interface AccountingHeaderProps {
   periods: AccountingPeriod[];
   onSelectPeriod: (periodId: string) => void;
   onSelectMonthYear: (year: number, monthIndex: number) => void;
-  onTogglePeriodLock: () => void;
+  onTogglePeriodLock: (periodId?: string) => void;
   totalCashAndBank: number;
   totalAR: number;
   totalAP: number;
@@ -137,7 +137,7 @@ export const AccountingHeader: React.FC<AccountingHeaderProps> = ({
             <button
               id="btn-toggle-period"
               type="button"
-              onClick={onTogglePeriodLock}
+              onClick={() => onTogglePeriodLock(activePeriod.id)}
               title={activePeriod.status === 'OPEN' ? 'Kunci Periode Buku' : 'Buka Kunci Periode'}
               className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer ${
                 activePeriod.status === 'OPEN'

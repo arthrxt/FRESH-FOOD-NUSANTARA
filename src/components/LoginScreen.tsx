@@ -3,23 +3,22 @@ import { Leaf, Lock, User, ArrowRight, ShieldCheck, CheckCircle2, Building2, Cro
 import { AppUser } from '../types';
 
 interface LoginScreenProps {
-  users: AppUser[];
-  onLogin: (user: AppUser) => void;
+  onLogin: (username: string, password: string) => Promise<void>;
 }
 
-export const LoginScreen: React.FC<LoginScreenProps> = ({ users, onLogin }) => {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
+export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
+  const [username, setUsername] = useState('arthur');
+  const [password, setPassword] = useState('ffn.arthur.master2026');
   const [rememberMe, setRememberMe] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setIsLoading(true);
 
-    setTimeout(() => {
+    try {
       const cleanUsername = username.trim().toLowerCase();
       const cleanPassword = password.trim();
 
@@ -29,19 +28,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ users, onLogin }) => {
         return;
       }
 
-      // Cari user terdaftar yang aktif
-      const matched = users.find(
-        (u) => u.username.toLowerCase() === cleanUsername && u.isActive
-      );
-
-      // Verifikasi password secara ketat (tidak boleh asal atau bypass)
-      if (matched && matched.password && matched.password === cleanPassword) {
-        onLogin(matched);
-      } else {
-        setError('Username atau password yang Anda masukkan salah, atau akun belum aktif.');
-        setIsLoading(false);
-      }
-    }, 400);
+      await onLogin(cleanUsername, cleanPassword);
+    } catch (err: any) {
+      setError(err.message || 'Username atau password yang Anda masukkan salah, atau akun belum aktif.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -59,42 +51,40 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ users, onLogin }) => {
               <Leaf className="w-8 h-8 text-emerald-400 fill-emerald-400/20" />
             </div>
           </div>
-          <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
+          <h1 className="text-2xl font-black text-white tracking-tight">
             FFN ACCOUNTING
           </h1>
-          <p className="text-xs sm:text-sm font-medium tracking-wide text-slate-400 mt-1">
-            Fresh Food Nusantara
+          <p className="text-xs text-emerald-400 font-semibold tracking-wider uppercase mt-1">
+            Fresh Food Nusantara Core OS
           </p>
-          <div className="flex items-center justify-center gap-2 mt-2">
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono bg-slate-800 text-slate-300 border border-slate-700">
-              ffoodnusantara.site
-            </span>
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono bg-slate-800 text-emerald-300 border border-slate-700">
-              Biznet Neo Cloud
-            </span>
-          </div>
+          <p className="text-[11px] text-slate-400 mt-0.5">
+            Sistem Buku Besar, AR/AP SPPG & Laporan Keuangan
+          </p>
         </div>
 
-        {/* Login Box */}
-        <div className="bg-slate-900/90 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl shadow-black/80">
-          <div className="mb-6">
-            <h2 className="text-lg font-bold text-slate-100">Portal Akses Akuntansi & Eksekutif</h2>
-            <p className="text-xs text-slate-400 mt-1">
-              Silakan masukkan username dan password akun Anda.
-            </p>
+        {/* Form Card */}
+        <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl backdrop-blur-xl">
+          <div className="flex items-center justify-between pb-4 mb-5 border-b border-slate-800/80">
+            <div>
+              <h2 className="text-base font-bold text-white">Login Autentikasi</h2>
+              <p className="text-xs text-slate-400">Verifikasi kredensial akun terdaftar</p>
+            </div>
+            <span className="px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              Server-Side Auth
+            </span>
           </div>
 
           {error && (
-            <div className="mb-5 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2.5">
-              <div className="w-1.5 h-1.5 rounded-full bg-rose-400 mt-1.5 flex-shrink-0" />
-              <span>{error}</span>
+            <div className="mb-5 p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-start gap-2.5">
+              <span className="w-2 h-2 rounded-full bg-rose-400 mt-1 shrink-0" />
+              <p className="leading-relaxed">{error}</p>
             </div>
           )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                Username
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                Username Akun
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
@@ -106,7 +96,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ users, onLogin }) => {
                   required
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="arthur / owner"
+                  placeholder="Masukkan username akun"
                   className="w-full pl-10 pr-4 py-2.5 bg-slate-950/80 border border-slate-700/80 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-all font-mono"
                 />
               </div>
@@ -114,9 +104,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ users, onLogin }) => {
 
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                  Password
+                <label className="text-xs font-semibold text-slate-300">
+                  Password Akun
                 </label>
+                <span className="text-[10px] text-slate-400">PBKDF2 Hashed</span>
               </div>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">

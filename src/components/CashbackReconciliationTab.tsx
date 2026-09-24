@@ -206,6 +206,7 @@ export const CashbackReconciliationTab: React.FC<CashbackReconciliationTabProps>
                 <th className="py-3 px-3 text-right font-bold text-indigo-900">Titipan</th>
                 <th className="py-3 px-3 text-right font-bold text-rose-900">Retur</th>
                 <th className="py-3 px-3 text-center">Status Akun</th>
+                <th className="py-3 px-3 text-center">Aksi Posting</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -257,6 +258,24 @@ export const CashbackReconciliationTab: React.FC<CashbackReconciliationTabProps>
                     >
                       {rec.accountingStatus === 'SUDAH_DIKREDIT' ? 'TERCATAT' : 'PIUTANG'}
                     </span>
+                  </td>
+
+                  <td className="py-3 px-3 text-center whitespace-nowrap">
+                    {rec.accountingStatus === 'SUDAH_DIKREDIT' ? (
+                      <span className="text-[10px] text-slate-400 font-mono">
+                        {rec.journalEntryNumber || 'Tercatat di Jurnal'}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => onPostToJournal(rec)}
+                        className="px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] inline-flex items-center gap-1 transition shadow-2xs cursor-pointer"
+                        title="Posting pengakuan margin cashback ke Jurnal Umum"
+                      >
+                        <FileCheck2 className="w-3 h-3" />
+                        Posting Jurnal
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
