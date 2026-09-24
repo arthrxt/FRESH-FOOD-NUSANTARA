@@ -87,7 +87,7 @@ export const InvestorObligationsTab: React.FC<InvestorObligationsTabProps> = ({
     if (!newInvestorName.trim()) return;
 
     const newPayout: MonthlyInvestorPayout = {
-      id: `inv-pay-${Date.now()}`,
+      id: `inv-pay-${crypto.randomUUID()}`,
       investorName: newInvestorName.trim(),
       period: 'September 2026',
       investmentAmount: Number(newInvestmentAmount) || 0,

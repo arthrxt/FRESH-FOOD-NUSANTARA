@@ -131,6 +131,34 @@ export interface SupplierBill {
   updatedAt: string;
 }
 
+export interface SalesInvoicePayment {
+  id: string;
+  invoiceId: string;
+  paymentNumber: string;
+  periodId: string;
+  date: string;
+  amount: number;
+  destinationAccountCode: string;
+  journalEntryNumber?: string;
+  notes?: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface SupplierBillPayment {
+  id: string;
+  billId: string;
+  paymentNumber: string;
+  periodId: string;
+  date: string;
+  amount: number;
+  sourceAccountCode: string;
+  journalEntryNumber?: string;
+  notes?: string;
+  createdBy: string;
+  createdAt: string;
+}
+
 export interface CompanyBankAccount {
   id: string;
   bankName: string;
@@ -209,6 +237,7 @@ export interface Session {
 export interface IdempotencyRecord {
   key: string;
   userId: string;
+  endpoint: string;
   requestHash: string;
   status: 'PROCESSING' | 'COMPLETED' | 'FAILED';
   statusCode: number;

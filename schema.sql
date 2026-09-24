@@ -265,6 +265,7 @@ CREATE TABLE IF NOT EXISTS cashback_records (
 CREATE TABLE IF NOT EXISTS idempotency_keys (
     key VARCHAR(128) PRIMARY KEY,
     user_id VARCHAR(64) NOT NULL,
+    endpoint VARCHAR(255) NOT NULL,
     request_hash VARCHAR(128) NOT NULL,
     status VARCHAR(16) NOT NULL CHECK (status IN ('PROCESSING', 'COMPLETED', 'FAILED')),
     response_body JSONB,
@@ -293,3 +294,13 @@ CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
 CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_logs(resource, resource_id);
 CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_logs(created_at);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id VARCHAR(128) PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    ip_address VARCHAR(64),
+    user_agent TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);

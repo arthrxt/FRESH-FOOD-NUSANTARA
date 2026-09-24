@@ -57,7 +57,7 @@ export const GeneralLedgerTab: React.FC<GeneralLedgerTabProps> = ({
     setEntryLines([
       ...entryLines,
       {
-        id: Math.random().toString(),
+        id: crypto.randomUUID(),
         accountCode: accounts[0]?.code || '1-1100',
         debit: 0,
         credit: 0,
@@ -96,13 +96,12 @@ export const GeneralLedgerTab: React.FC<GeneralLedgerTabProps> = ({
     if (!entryDescription.trim()) return;
 
     // Generate entry number
-    const seq = (journals.length + 1).toString().padStart(3, '0');
-    const entryNumber = `JU-${activePeriod.startDate.substring(0, 7).replace('-', '')}-${seq}`;
+    const entryNumber = `CLIENT-${crypto.randomUUID()}`;
 
     const formattedLines: JournalLine[] = entryLines.map((l, idx) => {
       const acc = accounts.find((a) => a.code === l.accountCode);
       return {
-        id: `jl-${Date.now()}-${idx}`,
+        id: `jl-${crypto.randomUUID()}-${idx}`,
         accountCode: l.accountCode,
         accountName: acc ? acc.name : l.accountCode,
         debit: Number(l.debit) || 0,

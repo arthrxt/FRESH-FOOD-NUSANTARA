@@ -119,7 +119,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
       if (role === 'OWNER') roleTitle = 'Business Owner & Executive Board';
 
       const newUser: AppUser = {
-        id: `user-${Date.now()}`,
+        id: `user-${crypto.randomUUID()}`,
         username: cleanUsername,
         fullName: fullName.trim(),
         role,

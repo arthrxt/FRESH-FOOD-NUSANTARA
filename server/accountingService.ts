@@ -1,11 +1,12 @@
+import crypto from 'crypto';
 import { dbStore } from './db';
 import { ChartOfAccount, JournalEntry, JournalLine, AccountingPeriod } from './types';
 
 export class AccountingService {
   /**
-   * Validasi ketat periode akuntansi (OPEN, LOCKED, CLOSED)
+   * Validasi apakah periode terbuka
    */
-  public static validatePeriod(periodId: string, transactionDate?: string): AccountingPeriod {
+  public static validatePeriod(periodId: string): AccountingPeriod {
     const db = dbStore.getData();
     const period = db.periods.find((p) => p.id === periodId);
     if (!period) {
@@ -13,26 +14,23 @@ export class AccountingService {
     }
     if (period.status !== 'OPEN') {
       throw new Error(
-        `Periode akuntansi '${period.name}' berstatus ${period.status}. Transaksi baru atau penyesuaian ditolak oleh sistem keamanan periode.`
+        `Periode akuntansi '${period.name}' berstatus ${period.status}. Transaksi baru atau penyesuaian ditolak.`
       );
     }
-
-    if (transactionDate) {
-      const txDate = new Date(transactionDate);
-      const start = new Date(period.startDate);
-      const end = new Date(period.endDate);
-      if (txDate < start || txDate > end) {
-        throw new Error(
-          `Tanggal transaksi (${transactionDate}) berada di luar jangkauan tanggal periode '${period.name}' (${period.startDate} s/d ${period.endDate}).`
-        );
-      }
-    }
-
     return period;
   }
 
+  public static validateTransactionDate(period: AccountingPeriod, date: string): void {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new Error('Tanggal transaksi harus berformat YYYY-MM-DD.');
+    }
+    if (date < period.startDate || date > period.endDate) {
+      throw new Error(`Tanggal transaksi berada di luar periode '${period.name}'.`);
+    }
+  }
+
   /**
-   * Helper untuk menghitung pembaharuan saldo COA secara safe decimal
+   * Helper untuk menghitung pembaharuan saldo COA
    */
   public static updateAccountBalances(
     accounts: ChartOfAccount[],
@@ -44,17 +42,11 @@ export class AccountingService {
       if (!acc) {
         throw new Error(`Akun dengan kode '${line.accountCode}' tidak ditemukan dalam Bagan Akun.`);
       }
-      if (!acc.isActive) {
-        throw new Error(`Akun '${acc.name}' (${acc.code}) berstatus nonaktif.`);
-      }
-
-      const debit = Math.round((Number(line.debit) || 0) * 100) / 100;
-      const credit = Math.round((Number(line.credit) || 0) * 100) / 100;
 
       if (acc.normalBalance === 'DEBIT') {
-        acc.balance = Math.round((acc.balance + (debit - credit) * multiplier) * 100) / 100;
+        acc.balance += (line.debit - line.credit) * multiplier;
       } else {
-        acc.balance = Math.round((acc.balance + (credit - debit) * multiplier) * 100) / 100;
+        acc.balance += (line.credit - line.debit) * multiplier;
       }
       acc.updatedAt = new Date().toISOString();
     });
@@ -64,36 +56,30 @@ export class AccountingService {
    * Validasi Double-Entry: Total Debit === Total Kredit
    */
   public static validateBalancedJournal(lines: JournalLine[]): { totalDebit: number; totalCredit: number } {
+    if (!Array.isArray(lines) || lines.length < 2) {
+      throw new Error('Jurnal harus memiliki minimal 2 baris.');
+    }
     let totalDebit = 0;
     let totalCredit = 0;
 
     for (const line of lines) {
-      const d = Number(line.debit) || 0;
-      const c = Number(line.credit) || 0;
-
-      if (isNaN(d) || isNaN(c) || !isFinite(d) || !isFinite(c)) {
-        throw new Error('Nilai debit atau kredit tidak valid (NaN/Infinity).');
-      }
-
-      if (d < 0 || c < 0) {
+      if (line.debit < 0 || line.credit < 0) {
         throw new Error('Nilai debit dan kredit tidak boleh bernilai negatif.');
       }
-
-      if (d > 0 && c > 0) {
-        throw new Error('Satu baris akun tidak boleh memiliki debit dan kredit sekaligus.');
+      if (line.debit > 0 && line.credit > 0) {
+        throw new Error('Satu baris jurnal tidak boleh memiliki debit dan kredit sekaligus.');
       }
-
-      totalDebit = Math.round((totalDebit + d) * 100) / 100;
-      totalCredit = Math.round((totalCredit + c) * 100) / 100;
+      totalDebit += line.debit;
+      totalCredit += line.credit;
     }
 
-    if (Math.abs(totalDebit - totalCredit) > 0.001) {
+    if (Math.abs(totalDebit - totalCredit) > 0.01) {
       throw new Error(
-        `Jurnal tidak seimbang (Unbalanced Entry). Total Debit (Rp ${totalDebit.toLocaleString('id-ID')}) !== Total Kredit (Rp ${totalCredit.toLocaleString('id-ID')}).`
+        `Jurnal tidak seimbang (Unbalanced Entry). Total Debit (Rp ${totalDebit.toLocaleString()}) !== Total Kredit (Rp ${totalCredit.toLocaleString()}).`
       );
     }
 
-    if (totalDebit <= 0) {
+    if (totalDebit === 0) {
       throw new Error('Jurnal tidak boleh bernilai total Rp 0.');
     }
 
@@ -101,68 +87,46 @@ export class AccountingService {
   }
 
   /**
-   * Buat nomor jurnal berurutan aman dari database sequence
+   * Buat nomor jurnal berurutan aman
    */
   public static generateJournalNumber(periodDate: string): string {
     const db = dbStore.getData();
     const periodPrefix = periodDate.substring(0, 7).replace('-', '');
     const prefix = `JU-${periodPrefix}-`;
-    
-    // Cari nomor urut tertinggi yang ada
-    let maxSeq = 0;
-    db.journals.forEach((j) => {
-      if (j.entryNumber.startsWith(prefix)) {
-        const parts = j.entryNumber.split('-');
-        const seq = parseInt(parts[parts.length - 1], 10);
-        if (!isNaN(seq) && seq > maxSeq) maxSeq = seq;
-      }
-    });
-
-    return `${prefix}${(maxSeq + 1).toString().padStart(3, '0')}`;
+    return this.generateUniqueNumber(prefix, db.journals.map((journal) => journal.entryNumber));
   }
 
   /**
-   * Buat nomor faktur penjualan (AR) berurutan dinamis
+   * Buat nomor faktur penjualan (AR) berurutan dinamis berdasarkan tanggal periode
    */
   public static generateInvoiceNumber(periodDate: string): string {
     const db = dbStore.getData();
-    const yearMonth = periodDate.substring(2, 7).replace('-', '');
+    const yearMonth = periodDate.substring(2, 7).replace('-', ''); // e.g. 2609
     const prefix = `INV-SPPG-${yearMonth}-`;
-
-    let maxSeq = 0;
-    db.invoices.forEach((inv) => {
-      if (inv.invoiceNumber.startsWith(prefix)) {
-        const parts = inv.invoiceNumber.split('-');
-        const seq = parseInt(parts[parts.length - 1], 10);
-        if (!isNaN(seq) && seq > maxSeq) maxSeq = seq;
-      }
-    });
-
-    return `${prefix}${(maxSeq + 1).toString().padStart(2, '0')}`;
+    return this.generateUniqueNumber(prefix, db.invoices.map((invoice) => invoice.invoiceNumber));
   }
 
   /**
-   * Buat nomor tagihan supplier (AP) berurutan dinamis
+   * Buat nomor tagihan supplier (AP) berurutan dinamis berdasarkan supplier dan tanggal periode
    */
   public static generateBillNumber(supplierName: string, periodDate: string): string {
     const db = dbStore.getData();
-    const yearMonth = periodDate.substring(2, 7).replace('-', '');
+    const yearMonth = periodDate.substring(2, 7).replace('-', ''); // e.g. 2609
     const cleanSupplier = (supplierName || 'SUP')
       .toUpperCase()
       .replace(/[^A-Z0-9]/g, ' ')
       .trim()
       .split(/\s+/)[0] || 'SUP';
     const prefix = `BILL-${cleanSupplier}-${yearMonth}-`;
+    return this.generateUniqueNumber(prefix, db.bills.map((bill) => bill.billNumber));
+  }
 
-    let maxSeq = 0;
-    db.bills.forEach((b) => {
-      if (b.billNumber.startsWith(prefix)) {
-        const parts = b.billNumber.split('-');
-        const seq = parseInt(parts[parts.length - 1], 10);
-        if (!isNaN(seq) && seq > maxSeq) maxSeq = seq;
-      }
-    });
-
-    return `${prefix}${(maxSeq + 1).toString().padStart(2, '0')}`;
+  private static generateUniqueNumber(prefix: string, existing: string[]): string {
+    const occupied = new Set(existing);
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const candidate = `${prefix}${crypto.randomUUID().replace(/-/g, '').slice(0, 10).toUpperCase()}`;
+      if (!occupied.has(candidate)) return candidate;
+    }
+    throw new Error('Gagal membuat nomor dokumen unik.');
   }
 }

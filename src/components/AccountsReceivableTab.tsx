@@ -73,7 +73,7 @@ export const AccountsReceivableTab: React.FC<AccountsReceivableTabProps> = ({
     setInvItems([
       ...invItems,
       {
-        id: Math.random().toString(),
+        id: crypto.randomUUID(),
         description: '',
         category: 'SAYUR',
         qty: 100,
@@ -104,8 +104,7 @@ export const AccountsReceivableTab: React.FC<AccountsReceivableTabProps> = ({
     const subtotal = itemsFormatted.reduce((sum, i) => sum + i.total, 0);
     const netTotal = subtotal + Number(invTitipan) - Number(invRetur);
 
-    const seq = (invoices.length + 1).toString().padStart(2, '0');
-    const invoiceNumber = `INV-SPPG-2609-${seq}`;
+    const invoiceNumber = `CLIENT-${crypto.randomUUID()}`;
 
     onAddInvoice({
       invoiceNumber,

@@ -68,7 +68,7 @@ export const AccountsPayableTab: React.FC<AccountsPayableTabProps> = ({
     setBillItems([
       ...billItems,
       {
-        id: Math.random().toString(),
+        id: crypto.randomUUID(),
         description: '',
         category: 'SAYUR',
         qty: 100,
@@ -98,9 +98,8 @@ export const AccountsPayableTab: React.FC<AccountsPayableTabProps> = ({
     }));
     const totalAmount = itemsFormatted.reduce((sum, i) => sum + i.total, 0);
 
-    const seq = (bills.length + 1).toString().padStart(2, '0');
     const prefix = billSupplier.toUpperCase().split(' ')[0] || 'SUP';
-    const billNumber = `BILL-${prefix}-2609-${seq}`;
+    const billNumber = `CLIENT-${prefix}-${crypto.randomUUID()}`;
 
     onAddBill({
       billNumber,

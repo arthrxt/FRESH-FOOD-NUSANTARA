@@ -23,15 +23,11 @@ class ApiClient {
   private token: string | null = null;
 
   constructor() {
-    this.token = typeof window !== 'undefined' ? sessionStorage.getItem('ffn_token') : null;
+    this.token = null;
   }
 
   public setToken(token: string | null) {
     this.token = token;
-    if (typeof window !== 'undefined') {
-      if (token) sessionStorage.setItem('ffn_token', token);
-      else sessionStorage.removeItem('ffn_token');
-    }
   }
 
   public getToken() {
@@ -45,36 +41,62 @@ class ApiClient {
     };
 
     if (this.token) {
-      headers['Authorization'] = `Bearer ${this.token}`;
+      headers['Authorization'] = 'Bearer ' + this.token;
     }
 
     // Auto-generate idempotency key for financial mutations
     if (['POST', 'PUT', 'DELETE'].includes(options.method || '') && !headers['Idempotency-Key']) {
-      headers['Idempotency-Key'] = `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      headers['Idempotency-Key'] = `req_${crypto.randomUUID()}`;
     }
 
-    const response = await fetch(endpoint, {
-      ...options,
-      headers,
-    });
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        ...options,
+        credentials: 'include',
+        headers,
+      });
+    } catch (error) {
+      throw new Error('Tidak dapat terhubung ke server. Periksa koneksi atau status server.');
+    }
 
-    const json = await response.json();
+    const contentType = response.headers.get('content-type') || '';
+    let payload: any = null;
+    const rawText = await response.text();
 
-    if (!response.ok || !json.success) {
-      const errorMsg = json.error?.message || `Request failed with status ${response.status}`;
+    if (!rawText) {
+      payload = null;
+    } else if (
+      contentType.includes('application/json') ||
+      contentType.includes('+json') ||
+      rawText.trim().startsWith('{') ||
+      rawText.trim().startsWith('[')
+    ) {
+      try {
+        payload = JSON.parse(rawText);
+      } catch {
+        throw new Error('Server mengembalikan respons JSON yang tidak valid.');
+      }
+    } else if (contentType.includes('text/html')) {
+      throw new Error(`Server mengembalikan HTML alih-alih JSON (status ${response.status}).`);
+    } else {
+      throw new Error(`Server mengembalikan respons tidak didukung (${contentType || 'unknown content type'}).`);
+    }
+
+    if (!response.ok || !payload || payload.success === false) {
+      const errorMsg = payload?.error?.message || `Request gagal dengan status ${response.status}`;
       throw new Error(errorMsg);
     }
 
-    return json.data;
+    return payload.data as T;
   }
 
   // Auth
-  async login(username: string, password: string): Promise<{ token: string; user: AppUser }> {
-    const data = await this.request<{ token: string; user: AppUser }>('/api/auth/login', {
+  async login(username: string, password: string): Promise<{ user: AppUser }> {
+    const data = await this.request<{ user: AppUser }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     });
-    this.setToken(data.token);
     return data;
   }
 
